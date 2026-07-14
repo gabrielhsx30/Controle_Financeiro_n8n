@@ -1,0 +1,679 @@
+{
+  "name": "Controle financeiro Telegram IA para Supabase",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "download": true
+        }
+      },
+      "id": "695fd7bc-6e5b-42db-9d5e-69274f198db9",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "position": [
+        1744,
+        1184
+      ],
+      "webhookId": "4fa0d5df-5d63-4197-a5ba-add4fb4205ba",
+      "typeVersion": 1.2,
+      "credentials": {
+        "telegramApi": {
+          "id": "X28v7mNrwmwquOFl",
+          "name": "Telegram account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"relevant\": true,\n  \"transacao\": {\n    \"data\": \"2026-06-04\",\n    \"tipo\": \"despesa\",\n    \"valor\": 28.9,\n    \"moeda\": \"BRL\",\n    \"categoria\": \"Alimentação\",\n    \"descricao\": \"Almoço no shopping\",\n    \"forma_pagamento\": \"débito\",\n    \"observacao\": \"\"\n  },\n  \"message\": \"Registrado ✅ Despesa de R$ 28,90 em Alimentação: almoço no shopping.\"\n}"
+      },
+      "id": "d24f2e09-e189-4d1a-a6e3-25c7c1d78d12",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "position": [
+        2880,
+        944
+      ],
+      "typeVersion": 1.3
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "430e6d22-2ff8-42bf-8f0e-940c0378ad30",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.output.relevant }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "533e5461-b9bf-46df-a15a-f693f3fbdd48",
+      "name": "É transação válida?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        3120,
+        816
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "={{ $('Transformar para PostgreSQL').first().json.confirmationMessage + '\\n\\nSalvo no PostgreSQL ✅' }}",
+        "additionalFields": {}
+      },
+      "id": "baaf7f9a-9d57-40ac-8c12-317de860520c",
+      "name": "Confirmar registro no Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        3792,
+        864
+      ],
+      "webhookId": "da2178e4-f6e4-4c45-b8de-b810d65f580a",
+      "typeVersion": 1.2,
+      "credentials": {
+        "telegramApi": {
+          "id": "M52wUFxyWHh3mUIa",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = $input.first().json.output;\nconst record = output.transacao || {};\nconst msg = $('Telegram Trigger').first().json.message || {};\nconst chat = msg.chat || {};\nconst from = msg.from || {};\n\nfunction cleanText(value, fallback = '') {\n  if (value === undefined || value === null) return fallback;\n  return String(value).trim();\n}\n\nfunction normalizeMoney(value) {\n  if (typeof value === 'number') return value;\n  const cleaned = String(value ?? '')\n    .replace(/[^\\d,.-]/g, '')\n    .replace(/\\.(?=\\d{3}(,|$))/g, '')\n    .replace(',', '.');\n  const number = Number(cleaned);\n  if (!Number.isFinite(number)) return null;\n  return number;\n}\n\nconst valor = normalizeMoney(record.valor);\nif (!valor || valor <= 0) {\n  throw new Error('Valor inválido ou ausente na transação.');\n}\n\nconst tipo = cleanText(record.tipo, 'despesa').toLowerCase();\nif (!['despesa', 'receita'].includes(tipo)) {\n  throw new Error('Tipo inválido. Use despesa ou receita.');\n}\n\nconst dataTransacao = cleanText(record.data, new Date().toISOString().slice(0, 10));\nconst moeda = cleanText(record.moeda, 'BRL').toUpperCase();\nconst categoria = cleanText(record.categoria, 'Outros');\nconst descricao = cleanText(record.descricao, cleanText(msg.text, 'Transação via Telegram'));\nconst formaPagamento = cleanText(record.forma_pagamento, 'não informado').toLowerCase();\nconst observacao = cleanText(record.observacao, '');\n\nreturn [\n  {\n    json: {\n      data_transacao: dataTransacao,\n      tipo,\n      valor,\n      moeda,\n      categoria,\n      descricao,\n      forma_pagamento: formaPagamento,\n      observacao,\n      telegram_chat_id: String(chat.id ?? ''),\n      telegram_message_id: String(msg.message_id ?? ''),\n      telegram_username: cleanText(from.username || chat.username || from.first_name || chat.first_name, ''),\n      mensagem_original: cleanText(msg.text, ''),\n      confirmationMessage: cleanText(output.message, `Registrado ✅ ${tipo} de R$ ${valor.toFixed(2)} em ${categoria}: ${descricao}`),\n      query: `\n        INSERT INTO public.transacoes_financeiras\n        (\n          data_transacao,\n          tipo,\n          valor,\n          moeda,\n          categoria,\n          descricao,\n          forma_pagamento,\n          observacao,\n          telegram_chat_id,\n          telegram_message_id,\n          telegram_username,\n          mensagem_original\n        )\n        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)\n        RETURNING id, data_transacao, tipo, valor, categoria, descricao;\n      `,\n      parameters: [\n        dataTransacao,\n        tipo,\n        valor,\n        moeda,\n        categoria,\n        descricao,\n        formaPagamento,\n        observacao,\n        String(chat.id ?? ''),\n        String(msg.message_id ?? ''),\n        cleanText(from.username || chat.username || from.first_name || chat.first_name, ''),\n        cleanText(msg.text, '')\n      ]\n    }\n  }\n];"
+      },
+      "id": "0e200929-7581-401a-acbb-b10bb8222cfb",
+      "name": "Transformar para PostgreSQL",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        3344,
+        864
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.message.text }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Você é um assistente financeiro pessoal para Telegram.\n\nVocê receberá uma mensagem curta do usuário descrevendo uma movimentação financeira. Sua tarefa é identificar se a mensagem contém uma despesa ou uma receita e retornar APENAS um JSON válido.\n\nRegras principais:\n- Use português do Brasil.\n- A moeda padrão é BRL.\n- Se a data não for informada, use a data atual: 2026-06-04.\n- Só marque \"relevant\": true quando houver pelo menos valor e contexto suficiente para identificar a transação.\n- Não invente valor.\n- Pode inferir categoria quando fizer sentido, mas sem exagerar.\n- Se a mensagem for ambígua, marque \"relevant\": false e peça a informação que falta.\n- Se o usuário escrever comandos como /resumo, /semana, /mes ou /ultimos, marque \"relevant\": false e explique que estes comandos serão configurados na próxima versão.\n- \"tipo\" deve ser apenas \"despesa\" ou \"receita\".\n- \"valor\" deve ser número decimal, sem símbolo de moeda.\n- \"forma_pagamento\" pode ser: pix, dinheiro, débito, crédito, boleto, transferência, não informado.\n- \"observacao\" pode ficar vazia.\n\nCategorias permitidas:\nAlimentação, Transporte, Educação, Tecnologia, Saúde, Lazer, Assinaturas, Trabalho, Mercado, Moradia, Contas, Renda, Investimentos, Igreja/Doações, Família, Pets, Outros.\n\nFormato obrigatório:\n{\n  \"relevant\": true,\n  \"transacao\": {\n    \"data\": \"YYYY-MM-DD\",\n    \"tipo\": \"despesa\",\n    \"valor\": 28.90,\n    \"moeda\": \"BRL\",\n    \"categoria\": \"Alimentação\",\n    \"descricao\": \"Almoço no shopping\",\n    \"forma_pagamento\": \"débito\",\n    \"observacao\": \"\"\n  },\n  \"message\": \"Registrado ✅ Despesa de R$ 28,90 em Alimentação: almoço no shopping.\"\n}\n\nSe não for uma transação válida:\n{\n  \"relevant\": false,\n  \"transacao\": {},\n  \"message\": \"Não consegui registrar. Me mande algo como: 'gastei 28,90 no almoço no débito'.\"\n}\n\nRetorne somente o JSON. Não inclua markdown, explicações ou texto fora do JSON."
+        }
+      },
+      "id": "e4eb51a8-9b52-4920-ab36-95dc5281b8c5",
+      "name": "Agente financeiro IA",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "position": [
+        2720,
+        720
+      ],
+      "typeVersion": 2.1
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "069b1c3b-d683-46f2-b7d6-9dbcdde41445",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              },
+              "leftValue": "={{ $json.message.toJsonString() }}",
+              "rightValue": "text"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1a7ccf8e-4d7b-46fd-a8c9-a2f54569ef2a",
+      "name": "Is text message?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        2496,
+        1008
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "=Por enquanto eu só consigo ler mensagens de texto. Me envie algo como: “gastei 28,90 no almoço no débito”.",
+        "additionalFields": {}
+      },
+      "id": "a694f3f5-b00f-476d-97f5-4f4cd27e8600",
+      "name": "Avisar tipo não suportado",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        2720,
+        1120
+      ],
+      "webhookId": "4e8e4674-5b05-458b-818a-f46a0254d344",
+      "typeVersion": 1.2,
+      "credentials": {
+        "telegramApi": {
+          "id": "M52wUFxyWHh3mUIa",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "# Controle financeiro Telegram + IA + PostgreSQL\n\n## O que este workflow faz\n1. Recebe uma mensagem de texto no Telegram.\n2. Usa IA para identificar despesa ou receita.\n3. Classifica valor, categoria, descrição, forma de pagamento e data.\n4. Garante que a tabela `public.transacoes_financeiras` exista no PostgreSQL da VPS.\n5. Insere a transação no PostgreSQL.\n6. Confirma no Telegram somente depois de salvar.\n\n## Exemplo de mensagem\n`gastei 28,90 no almoço no débito`\n\n## Tabela usada\n`public.transacoes_financeiras`\n\n## Atenção\n- Configure a credencial do Telegram.\n- Configure a credencial PostgreSQL apontando para o banco da VPS.\n- O node de IA ficou compatível com o template original. Se você preferir Gemini, substitua o node de modelo por Google Gemini Chat Model e conecte ao agente.",
+        "height": 2000,
+        "width": 1024
+      },
+      "id": "710a9ef6-4ec3-4393-8486-e775de508c7b",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        160,
+        16
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "![Alt text](https://wisestackai.s3.ap-southeast-1.amazonaws.com/Screenshot+2025-08-04+at+9.32.37%E2%80%AFPM.png \"Optional title\")",
+        "height": 320,
+        "width": 960
+      },
+      "id": "b73f4af3-096a-411d-aeb7-7dd410f27c2c",
+      "name": "Sticky Note1",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        3904,
+        720
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "![Alt text](https://wisestackai.s3.ap-southeast-1.amazonaws.com/Screenshot+2025-08-04+at+9.32.13%E2%80%AFPM.png \"Optional title\")",
+        "height": 272,
+        "width": 960
+      },
+      "id": "d4d38304-b2cc-4402-83b9-f504d021f1d3",
+      "name": "Sticky Note2",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        3136,
+        256
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "![Alt text](https://wisestackai.s3.ap-southeast-1.amazonaws.com/Screenshot+2025-08-04+at+9.28.40%E2%80%AFPM.png \"Optional title\")",
+        "height": 288,
+        "width": 960
+      },
+      "id": "c2508fa9-0b28-41e1-9f2e-c9b30bf5c6f7",
+      "name": "Sticky Note3",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        3104,
+        1248
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "![Alt text](https://wisestackai.s3.ap-southeast-1.amazonaws.com/Screenshot+2025-08-04+at+9.37.48%E2%80%AFPM.png \"Optional title\")",
+        "height": 208,
+        "width": 960
+      },
+      "id": "3d68d238-9493-4750-8faf-8ef5668a25f9",
+      "name": "Sticky Note4",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        2048,
+        1312
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "### 1. 📩 Telegram Trigger  \n**Description**: Listens for incoming messages from the user via the connected Telegram bot. This is the entry point of the workflow.",
+        "height": 128,
+        "width": 304
+      },
+      "id": "7e352fd6-7bb2-4431-b7e8-71ae1e376f96",
+      "name": "Sticky Note5",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1696,
+        1008
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "### 2. Is Text Message?  \n**Description**: Checks whether the incoming Telegram message is a text message. If not, the workflow routes to an \"unsupported message type\" handler.",
+        "height": 144,
+        "width": 272
+      },
+      "id": "4427aa5d-5029-4590-8942-c9821a88db79",
+      "name": "Sticky Note6",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        2160,
+        832
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "### 3. 💬 Budget Buddy Telegram Agent (GPT-4.1 Mini)  \n**Description**: Sends the user’s text message to the GPT-4.1 Mini model along with a system prompt. The model returns a JSON object with `relevant`, `expense_record`, and `message`.\n",
+        "height": 112,
+        "width": 512
+      },
+      "id": "31e05f73-c2af-43ad-855d-0b6506c194b1",
+      "name": "Sticky Note7",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        2400,
+        560
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "### 4.1. ✅ Acknowledge the Expense  \n**Description**: Sends a friendly confirmation message back to the user on Telegram, using the `message` field returned by the LLM.\n",
+        "height": 96,
+        "width": 640
+      },
+      "id": "758b3684-6fc7-4e44-ba7f-14e209ddb76f",
+      "name": "Sticky Note8",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        3152,
+        544
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "### 4.2 Transform & log expense\n- Transform the Output to Expense Record  \n- Log Expense Record to Google Sheet  \n\n",
+        "height": 96,
+        "width": 512
+      },
+      "id": "daddd82d-57d2-493b-b8f1-a10013f17476",
+      "name": "Sticky Note9",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        3328,
+        736
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "### 5 Let use know that the scenario is not supported\n- Only support budget expense\n- Let use know that their question/message is not relevant",
+        "height": 112,
+        "width": 512
+      },
+      "id": "978145f4-36a4-4534-bf89-7dceae640cb5",
+      "name": "Sticky Note10",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        3392,
+        1072
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "content": "![Alt text](https://wisestackai.s3.ap-southeast-1.amazonaws.com/Screenshot+2025-08-04+at+9.49.43%E2%80%AFPM.png \"Optional title\")",
+        "height": 752,
+        "width": 1136
+      },
+      "id": "2c0b734f-0e7e-44ff-846a-911b8fd50ffc",
+      "name": "Sticky Note11",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1232,
+        16
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        2752,
+        944
+      ],
+      "id": "e567ad4b-d225-4d5c-8a38-4437f383f3ea",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "56j6jjDk1kGdL5ij",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2d32dfde-3553-49a6-8441-eb643df87088",
+              "leftValue": "={{ $json.message.chat.id }}",
+              "rightValue": 8585722845,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1984,
+        1184
+      ],
+      "id": "c0c528ac-dc96-4685-9522-10c19bc9b62c",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+        "text": "={{ $json.output.message }}",
+        "additionalFields": {}
+      },
+      "id": "4aafbf4c-42ae-46b1-9064-0cec0105c556",
+      "name": "Avisar mensagem inválida",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        3344,
+        1056
+      ],
+      "webhookId": "4e8e4674-5b05-458b-818a-f46a0254d344",
+      "typeVersion": 1.2,
+      "credentials": {
+        "telegramApi": {
+          "id": "M52wUFxyWHh3mUIa",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3952,
+        560
+      ],
+      "id": "0cbb255f-036c-4789-ae85-9795bd5ef45c",
+      "name": "Insert or update rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "mxkV4sUGlkvJ74FA",
+          "name": "Postgres pgfinanceiro IP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "transacoes_financeiras",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "telegram_message_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.telegram_message_id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "data_transacao",
+              "fieldValue": "={{ $json.data_transacao }}"
+            },
+            {
+              "fieldId": "tipo",
+              "fieldValue": "={{ $json.tipo }}"
+            },
+            {
+              "fieldId": "valor",
+              "fieldValue": "={{ $json.valor }}"
+            },
+            {
+              "fieldId": "moeda",
+              "fieldValue": "={{ $json.moeda }}"
+            },
+            {
+              "fieldId": "categoria",
+              "fieldValue": "={{ $json.categoria }}"
+            },
+            {
+              "fieldId": "descricao",
+              "fieldValue": "={{ $json.descricao }}"
+            },
+            {
+              "fieldId": "forma_pagamento",
+              "fieldValue": "={{ $json.forma_pagamento }}"
+            },
+            {
+              "fieldId": "observacao",
+              "fieldValue": "={{ $json.observacao }}"
+            },
+            {
+              "fieldId": "telegram_chat_id",
+              "fieldValue": "={{ $json.telegram_chat_id }}"
+            },
+            {
+              "fieldId": "telegram_message_id",
+              "fieldValue": "={{ $json.mensagem_original }}"
+            },
+            {
+              "fieldId": "telegram_username",
+              "fieldValue": "={{ $json.telegram_username }}"
+            },
+            {
+              "fieldId": "mensagem_original",
+              "fieldValue": "={{ $json.mensagem_original }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        3552,
+        864
+      ],
+      "id": "eb3fad11-3721-4546-8b15-27104d8b8f80",
+      "name": "Update a row",
+      "credentials": {
+        "supabaseApi": {
+          "id": "fuVttFgJePv1Ds5w",
+          "name": "Supabase account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is text message?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Avisar tipo não suportado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Agente financeiro IA",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente financeiro IA": {
+      "main": [
+        [
+          {
+            "node": "É transação válida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "É transação válida?": {
+      "main": [
+        [
+          {
+            "node": "Transformar para PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Avisar mensagem inválida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transformar para PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Update a row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente financeiro IA",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Is text message?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert or update rows in a table": {
+      "main": [
+        []
+      ]
+    },
+    "Update a row": {
+      "main": [
+        [
+          {
+            "node": "Confirmar registro no Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "d5d1c46c-fea8-450c-9897-4474d1358000",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "0c91e6d96c7e56fdd03c536f4067e6cae644867f6458ed51e6f1d21259268c3a"
+  },
+  "nodeGroups": [],
+  "id": "f7brk1ZEO5CtgTTh",
+  "tags": []
+}
